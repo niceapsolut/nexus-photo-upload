@@ -1274,8 +1274,21 @@ export default function Admin() {
 
           {showEditForm && editingToken && (
             <div className="bg-white rounded-xl shadow-md p-6 mb-6 border-2 border-amber-500">
-              <h3 className="text-lg font-semibold text-slate-900 mb-4">Edit Upload Link</h3>
-              <form onSubmit={updateToken} className="space-y-4">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-slate-900">Edit Upload Link</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const form = document.getElementById('edit-form') as HTMLFormElement;
+                    form?.requestSubmit();
+                  }}
+                  disabled={uploadingOverlay}
+                  className="bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+                >
+                  {uploadingOverlay ? 'Saving...' : 'Update Link'}
+                </button>
+              </div>
+              <form id="edit-form" onSubmit={updateToken} className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">
                     Link Name
