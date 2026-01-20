@@ -66,10 +66,6 @@ export default function CapturePhoto() {
 
   const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file && galleryInputRef.current) {
-      galleryInputRef.current.click();
-      return;
-    }
     if (file) handleFileSelected(file);
   };
 
@@ -387,7 +383,7 @@ export default function CapturePhoto() {
                 ref={cameraInputRef}
                 type="file"
                 accept="image/*"
-                capture="environment"
+                capture
                 onChange={handleCameraCapture}
                 className="hidden"
                 id="camera-input"
