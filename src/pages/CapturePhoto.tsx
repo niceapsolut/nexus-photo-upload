@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Camera, CheckCircle, XCircle, RotateCcw, Upload, AlertCircle, Image } from 'lucide-react';
+import { Camera, CheckCircle, XCircle, RotateCcw, Upload, AlertCircle, Image, Video, X } from 'lucide-react';
 import { compressImage } from '../utils/imageCompression';
 import { supabase } from '../lib/supabase';
 import { applyOverlay } from '../utils/imageOverlay';
@@ -23,8 +23,13 @@ export default function CapturePhoto() {
   const [success, setSuccess] = useState(false);
   const [tokenValid, setTokenValid] = useState<boolean | null>(null);
   const [successConfig, setSuccessConfig] = useState<SuccessConfig | null>(null);
+  const [isWebcamMode, setIsWebcamMode] = useState(false);
+  const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null);
+  const [isDesktop, setIsDesktop] = useState(false);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const MAX_FILE_SIZE = 15 * 1024 * 1024;
 
   const token = searchParams.get('t');
@@ -41,6 +46,70 @@ export default function CapturePhoto() {
       console.error('Missing env vars:', { supabaseUrl, supabaseAnonKey });
     }
   }, [token, supabaseUrl, supabaseAnonKey]);
+
+  // Detect desktop (Windows/Mac) vs mobile
+  useEffect(() => {
+    const userAgent = navigator.userAgent.toLowerCase();
+    const isMobile = /iphone|ipad|ipod|android|webos|blackberry|windows phone/i.test(userAgent);
+    setIsDesktop(!isMobile);
+  }, []);
+
+  // Cleanup webcam on unmount
+  useEffect(() => {
+    return () => {
+      if (webcamStream) {
+        webcamStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [webcamStream]);
+
+  const startWebcam = useCallback(async () => {
+    try {
+      setError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } }
+      });
+      setWebcamStream(stream);
+      setIsWebcamMode(true);
+
+      // Wait for videoRef to be available
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      }, 100);
+    } catch (err) {
+      console.error('Webcam error:', err);
+      setError('Could not access webcam. Please check permissions.');
+    }
+  }, []);
+
+  const stopWebcam = useCallback(() => {
+    if (webcamStream) {
+      webcamStream.getTracks().forEach(track => track.stop());
+      setWebcamStream(null);
+    }
+    setIsWebcamMode(false);
+  }, [webcamStream]);
+
+  const captureFromWebcam = useCallback(() => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+
+    setCapturedImage(dataUrl);
+    stopWebcam();
+  }, [stopWebcam]);
 
   const validateFile = (file: File | undefined): string | null => {
     if (!file) return 'No file selected';
@@ -369,7 +438,47 @@ export default function CapturePhoto() {
 
       <main className="flex-1 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-xl p-6 max-w-2xl w-full">
-          {!capturedImage ? (
+          {/* Hidden canvas for webcam capture */}
+          <canvas ref={canvasRef} className="hidden" />
+
+          {/* Webcam live preview mode */}
+          {isWebcamMode && !capturedImage && (
+            <div className="space-y-6">
+              <div className="relative rounded-xl overflow-hidden bg-slate-900">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-auto max-h-96 object-contain transform scale-x-[-1]"
+                />
+                <button
+                  onClick={stopWebcam}
+                  className="absolute top-3 right-3 bg-black bg-opacity-50 hover:bg-opacity-70 text-white p-2 rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <button
+                onClick={captureFromWebcam}
+                className="w-full flex items-center justify-center gap-3 bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-xl transition-colors"
+              >
+                <Camera className="w-6 h-6" />
+                <span>Snap Photo</span>
+              </button>
+
+              {error && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-red-800 text-sm">{error}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Photo selection mode */}
+          {!isWebcamMode && !capturedImage && (
             <div className="space-y-6">
               <div className="text-center">
                 <Camera className="w-16 h-16 text-blue-500 mx-auto mb-4" />
@@ -398,24 +507,35 @@ export default function CapturePhoto() {
                 id="gallery-input"
               />
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className={`grid gap-4 ${isDesktop ? 'grid-cols-3' : 'grid-cols-2'}`}>
                 <button
                   type="button"
                   onClick={openCamera}
-                  className="flex flex-col items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-6 px-6 rounded-xl transition-colors"
+                  className="flex flex-col items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-6 px-4 rounded-xl transition-colors"
                 >
                   <Camera className="w-8 h-8" />
-                  <span>Take Photo</span>
+                  <span className="text-sm">Take Photo</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={openGallery}
-                  className="flex flex-col items-center justify-center gap-3 bg-slate-600 hover:bg-slate-700 text-white font-semibold py-6 px-6 rounded-xl transition-colors"
+                  className="flex flex-col items-center justify-center gap-3 bg-slate-600 hover:bg-slate-700 text-white font-semibold py-6 px-4 rounded-xl transition-colors"
                 >
                   <Image className="w-8 h-8" />
-                  <span>Choose from Gallery</span>
+                  <span className="text-sm">Gallery</span>
                 </button>
+
+                {isDesktop && (
+                  <button
+                    type="button"
+                    onClick={startWebcam}
+                    className="flex flex-col items-center justify-center gap-3 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-6 px-4 rounded-xl transition-colors"
+                  >
+                    <Video className="w-8 h-8" />
+                    <span className="text-sm">Webcam</span>
+                  </button>
+                )}
               </div>
 
               {error && (
@@ -425,7 +545,10 @@ export default function CapturePhoto() {
                 </div>
               )}
             </div>
-          ) : (
+          )}
+
+          {/* Captured image preview */}
+          {capturedImage && (
             <div className="space-y-6">
               <div className="relative rounded-xl overflow-hidden bg-slate-100">
                 <img
