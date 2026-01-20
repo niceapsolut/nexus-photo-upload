@@ -1,17 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, QrCode, Upload, LogOut, Calendar, Hash, Trash2, X, Download, Edit, FolderOpen, UserPlus, Users } from 'lucide-react';
+import { Plus, QrCode, Upload, LogOut, Calendar, Hash, Trash2, X, Download, Edit, FolderOpen, UserPlus, Users, Copy, ChevronDown, ChevronUp } from 'lucide-react';
 import QRCodeSVG from 'react-qr-code';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-
-interface OverlayConfig {
-  enabled: boolean;
-  url: string;
-  position: 'center' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
-  opacity: number;
-  scale: number;
-}
+import {
+  OverlayConfig,
+  OverlayItem,
+  OrientationSettings,
+  OverlayPosition,
+  OverlayMode,
+  isLegacyOverlayConfig,
+  migrateLegacyConfig,
+  getDefaultOverlayConfig,
+  getDefaultOrientationSettings,
+  createEmptyOverlayItem,
+  MAX_OVERLAYS,
+} from '../types/overlay';
 
 interface SuccessConfig {
   show_photo: boolean;
@@ -77,16 +82,12 @@ export default function Admin() {
     expires_in_days: 90,
   });
   const [noExpiration, setNoExpiration] = useState(false);
-  const [overlayConfig, setOverlayConfig] = useState<OverlayConfig>({
-    enabled: false,
-    url: '/overlay.png',
-    position: 'bottom-right',
-    opacity: 0.8,
-    scale: 0.3,
-  });
-  const [overlayFile, setOverlayFile] = useState<File | null>(null);
-  const [overlayPreview, setOverlayPreview] = useState<string | null>(null);
+  const [overlayConfig, setOverlayConfig] = useState<OverlayConfig>(getDefaultOverlayConfig());
+  const [overlayFiles, setOverlayFiles] = useState<Map<string, { portrait: File | null; landscape: File | null }>>(new Map());
+  const [overlayPreviews, setOverlayPreviews] = useState<Map<string, { portrait: string | null; landscape: string | null }>>(new Map());
   const [uploadingOverlay, setUploadingOverlay] = useState(false);
+  const [activeOverlayTab, setActiveOverlayTab] = useState<Map<string, 'portrait' | 'landscape'>>(new Map());
+  const [expandedOverlays, setExpandedOverlays] = useState<Set<string>>(new Set());
   const [successConfig, setSuccessConfig] = useState<SuccessConfig>({
     show_photo: true,
     title: 'Upload Successful!',
@@ -133,7 +134,7 @@ export default function Admin() {
     }
   };
 
-  const handleOverlayFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleOverlayFileChange = (overlayId: string, orientation: 'portrait' | 'landscape', e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       // Validate file type
@@ -141,34 +142,41 @@ export default function Admin() {
         alert('Please select an image file');
         return;
       }
-      
-      setOverlayFile(file);
-      
+
+      // Update files map
+      setOverlayFiles(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(overlayId) || { portrait: null, landscape: null };
+        newMap.set(overlayId, { ...existing, [orientation]: file });
+        return newMap;
+      });
+
       // Create preview
       const reader = new FileReader();
       reader.onloadend = () => {
-        setOverlayPreview(reader.result as string);
+        setOverlayPreviews(prev => {
+          const newMap = new Map(prev);
+          const existing = newMap.get(overlayId) || { portrait: null, landscape: null };
+          newMap.set(overlayId, { ...existing, [orientation]: reader.result as string });
+          return newMap;
+        });
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const uploadOverlayImage = async (): Promise<string | null> => {
-    if (!overlayFile) return null;
-
+  const uploadSingleOverlayImage = async (file: File): Promise<string | null> => {
     try {
-      setUploadingOverlay(true);
-      
       // Generate unique filename
-      const fileExt = overlayFile.name.split('.').pop();
-      const fileName = `overlay-${Date.now()}.${fileExt}`;
+      const fileExt = file.name.split('.').pop();
+      const fileName = `overlay-${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
       const filePath = `overlays/${fileName}`;
 
       // Upload to Supabase Storage
       const { error } = await supabase.storage
         .from('photo-uploads')
-        .upload(filePath, overlayFile, {
-          contentType: overlayFile.type,
+        .upload(filePath, file, {
+          contentType: file.type,
           upsert: false,
         });
 
@@ -182,11 +190,146 @@ export default function Admin() {
       return publicUrl;
     } catch (err) {
       console.error('Error uploading overlay:', err);
-      alert('Failed to upload overlay image');
       return null;
+    }
+  };
+
+  const uploadAllOverlayImages = async (): Promise<OverlayConfig> => {
+    setUploadingOverlay(true);
+    const updatedConfig = { ...overlayConfig };
+
+    try {
+      for (let i = 0; i < updatedConfig.overlays.length; i++) {
+        const overlay = updatedConfig.overlays[i];
+        const files = overlayFiles.get(overlay.id);
+
+        if (files?.portrait) {
+          const url = await uploadSingleOverlayImage(files.portrait);
+          if (url) {
+            updatedConfig.overlays[i] = { ...overlay, portraitUrl: url };
+            overlay.portraitUrl = url;
+          }
+        }
+
+        if (files?.landscape) {
+          const url = await uploadSingleOverlayImage(files.landscape);
+          if (url) {
+            updatedConfig.overlays[i] = { ...overlay, landscapeUrl: url };
+            overlay.landscapeUrl = url;
+          }
+        }
+      }
+
+      return updatedConfig;
     } finally {
       setUploadingOverlay(false);
     }
+  };
+
+  const addOverlayItem = () => {
+    if (overlayConfig.overlays.length >= MAX_OVERLAYS) {
+      alert(`Maximum ${MAX_OVERLAYS} overlays allowed`);
+      return;
+    }
+
+    const newItem = createEmptyOverlayItem();
+    setOverlayConfig(prev => ({
+      ...prev,
+      overlays: [...prev.overlays, newItem],
+    }));
+    setExpandedOverlays(prev => new Set(prev).add(newItem.id));
+  };
+
+  const removeOverlayItem = (id: string) => {
+    setOverlayConfig(prev => ({
+      ...prev,
+      overlays: prev.overlays.filter(o => o.id !== id),
+    }));
+    setOverlayFiles(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(id);
+      return newMap;
+    });
+    setOverlayPreviews(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(id);
+      return newMap;
+    });
+  };
+
+  const updateOverlayItem = (id: string, updates: Partial<OverlayItem>) => {
+    setOverlayConfig(prev => ({
+      ...prev,
+      overlays: prev.overlays.map(o => o.id === id ? { ...o, ...updates } : o),
+    }));
+  };
+
+  const updateOrientationSettings = (overlayId: string, orientation: 'portrait' | 'landscape', settings: Partial<OrientationSettings>) => {
+    setOverlayConfig(prev => ({
+      ...prev,
+      overlays: prev.overlays.map(o => {
+        if (o.id !== overlayId) return o;
+        return {
+          ...o,
+          [orientation]: { ...o[orientation], ...settings },
+        };
+      }),
+    }));
+  };
+
+  const copySettingsToLandscape = (overlayId: string) => {
+    const overlay = overlayConfig.overlays.find(o => o.id === overlayId);
+    if (!overlay) return;
+
+    updateOverlayItem(overlayId, {
+      landscape: { ...overlay.portrait },
+      landscapeUrl: overlay.portraitUrl,
+    });
+
+    // Also copy the file if exists
+    const files = overlayFiles.get(overlayId);
+    if (files?.portrait) {
+      setOverlayFiles(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(overlayId) || { portrait: null, landscape: null };
+        newMap.set(overlayId, { ...existing, landscape: files.portrait });
+        return newMap;
+      });
+    }
+
+    const previews = overlayPreviews.get(overlayId);
+    if (previews?.portrait) {
+      setOverlayPreviews(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(overlayId) || { portrait: null, landscape: null };
+        newMap.set(overlayId, { ...existing, landscape: previews.portrait });
+        return newMap;
+      });
+    }
+  };
+
+  const toggleOverlayExpanded = (id: string) => {
+    setExpandedOverlays(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  };
+
+  const getActiveTab = (overlayId: string): 'portrait' | 'landscape' => {
+    return activeOverlayTab.get(overlayId) || 'portrait';
+  };
+
+  const setActiveTab = (overlayId: string, tab: 'portrait' | 'landscape') => {
+    setActiveOverlayTab(prev => {
+      const newMap = new Map(prev);
+      newMap.set(overlayId, tab);
+      return newMap;
+    });
   };
 
   const createToken = async (e: React.FormEvent) => {
@@ -200,15 +343,16 @@ export default function Admin() {
         expiresAt = date.toISOString();
       }
 
-      // Upload overlay image if provided
-      let finalOverlayConfig = { ...overlayConfig };
-      if (overlayConfig.enabled && overlayFile) {
-        const overlayUrl = await uploadOverlayImage();
-        if (overlayUrl) {
-          finalOverlayConfig.url = overlayUrl;
-        } else {
-          alert('Failed to upload overlay. Link will be created without overlay.');
-          finalOverlayConfig.enabled = false;
+      // Upload all overlay images and get updated config
+      let finalOverlayConfig = overlayConfig;
+      if (overlayConfig.enabled && overlayConfig.overlays.length > 0) {
+        finalOverlayConfig = await uploadAllOverlayImages();
+
+        // Validate that at least one overlay has images
+        const hasValidOverlay = finalOverlayConfig.overlays.some(o => o.portraitUrl || o.landscapeUrl);
+        if (!hasValidOverlay) {
+          alert('Please upload at least one overlay image.');
+          return;
         }
       }
 
@@ -233,15 +377,10 @@ export default function Admin() {
         expires_in_days: 90,
       });
       setNoExpiration(false);
-      setOverlayConfig({
-        enabled: false,
-        url: '/overlay.png',
-        position: 'bottom-right',
-        opacity: 0.8,
-        scale: 0.3,
-      });
-      setOverlayFile(null);
-      setOverlayPreview(null);
+      setOverlayConfig(getDefaultOverlayConfig());
+      setOverlayFiles(new Map());
+      setOverlayPreviews(new Map());
+      setExpandedOverlays(new Set());
       setSuccessConfig({
         show_photo: true,
         title: 'Upload Successful!',
@@ -281,13 +420,23 @@ export default function Admin() {
       expires_in_days: 90,
     });
     setNoExpiration(!token.expires_at);
-    setOverlayConfig(token.overlay_config || {
-      enabled: false,
-      url: '/overlay.png',
-      position: 'bottom-right',
-      opacity: 0.8,
-      scale: 0.3,
-    });
+
+    // Handle overlay config - migrate legacy format if needed
+    let config: OverlayConfig;
+    if (token.overlay_config) {
+      if (isLegacyOverlayConfig(token.overlay_config)) {
+        config = migrateLegacyConfig(token.overlay_config);
+      } else {
+        config = token.overlay_config as OverlayConfig;
+      }
+    } else {
+      config = getDefaultOverlayConfig();
+    }
+    setOverlayConfig(config);
+
+    // Expand all overlays by default when editing
+    setExpandedOverlays(new Set(config.overlays.map(o => o.id)));
+
     setSuccessConfig(token.success_config || {
       show_photo: true,
       title: 'Upload Successful!',
@@ -297,8 +446,8 @@ export default function Admin() {
       redirect_url: '',
       redirect_delay: 3000,
     });
-    setOverlayFile(null);
-    setOverlayPreview(null);
+    setOverlayFiles(new Map());
+    setOverlayPreviews(new Map());
     setShowEditForm(true);
     setShowCreateForm(false);
   };
@@ -317,13 +466,10 @@ export default function Admin() {
         expiresAt = null;
       }
 
-      // Upload new overlay image if provided
-      let finalOverlayConfig = { ...overlayConfig };
-      if (overlayConfig.enabled && overlayFile) {
-        const overlayUrl = await uploadOverlayImage();
-        if (overlayUrl) {
-          finalOverlayConfig.url = overlayUrl;
-        }
+      // Upload all new overlay images and get updated config
+      let finalOverlayConfig = overlayConfig;
+      if (overlayConfig.enabled && overlayConfig.overlays.length > 0) {
+        finalOverlayConfig = await uploadAllOverlayImages();
       }
 
       const { error } = await supabase
@@ -352,15 +498,10 @@ export default function Admin() {
         expires_in_days: 90,
       });
       setNoExpiration(false);
-      setOverlayConfig({
-        enabled: false,
-        url: '/overlay.png',
-        position: 'bottom-right',
-        opacity: 0.8,
-        scale: 0.3,
-      });
-      setOverlayFile(null);
-      setOverlayPreview(null);
+      setOverlayConfig(getDefaultOverlayConfig());
+      setOverlayFiles(new Map());
+      setOverlayPreviews(new Map());
+      setExpandedOverlays(new Set());
       setSuccessConfig({
         show_photo: true,
         title: 'Upload Successful!',
@@ -536,7 +677,7 @@ export default function Admin() {
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">Admin Portal</h1>
+              <h1 className="text-2xl font-bold text-slate-900">Nexus Photo UP!</h1>
               <p className="text-sm text-slate-600 mt-1">{user?.email}</p>
             </div>
             <div className="flex items-center gap-4">
@@ -708,89 +849,263 @@ export default function Admin() {
 
                   {overlayConfig.enabled && (
                     <div className="ml-6 space-y-4 bg-slate-50 p-4 rounded-lg">
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">
-                          Upload Overlay Image
-                        </label>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={handleOverlayFileChange}
-                          className="w-full text-sm text-slate-500
-                            file:mr-4 file:py-2 file:px-4
-                            file:rounded-lg file:border-0
-                            file:text-sm file:font-semibold
-                            file:bg-blue-50 file:text-blue-700
-                            hover:file:bg-blue-100
-                            cursor-pointer"
-                        />
-                        <p className="text-xs text-slate-500 mt-1">
-                          {uploadingOverlay ? 'Uploading...' : 'Upload a PNG or image file for the watermark'}
-                        </p>
-                        
-                        {/* Preview */}
-                        {overlayPreview && (
-                          <div className="mt-3">
-                            <p className="text-xs font-medium text-slate-700 mb-1">Preview:</p>
-                            <div className="relative w-32 h-32 bg-white border-2 border-slate-200 rounded-lg overflow-hidden">
-                              <img 
-                                src={overlayPreview} 
-                                alt="Overlay preview" 
-                                className="w-full h-full object-contain"
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
+                      {/* Mode Selector */}
                       <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">
-                          Position
+                          Selection Mode
                         </label>
                         <select
-                          value={overlayConfig.position}
-                          onChange={(e) => setOverlayConfig({ ...overlayConfig, position: e.target.value as OverlayConfig['position'] })}
+                          value={overlayConfig.mode}
+                          onChange={(e) => setOverlayConfig({ ...overlayConfig, mode: e.target.value as OverlayMode })}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
                         >
-                          <option value="bottom-right">Bottom Right</option>
-                          <option value="bottom-left">Bottom Left</option>
-                          <option value="top-right">Top Right</option>
-                          <option value="top-left">Top Left</option>
-                          <option value="center">Center</option>
+                          <option value="random">Random - Auto-select one overlay</option>
+                          <option value="user_choice">User Choice - Let user pick from carousel</option>
                         </select>
+                        <p className="text-xs text-slate-500 mt-1">
+                          {overlayConfig.mode === 'random'
+                            ? 'System randomly picks one overlay for each photo'
+                            : 'Users see a carousel and choose their preferred overlay'}
+                        </p>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">
-                            Opacity ({(overlayConfig.opacity * 100).toFixed(0)}%)
+                      {/* Overlay List */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-sm font-medium text-slate-700">
+                            Overlays ({overlayConfig.overlays.length}/{MAX_OVERLAYS})
                           </label>
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.1"
-                            value={overlayConfig.opacity}
-                            onChange={(e) => setOverlayConfig({ ...overlayConfig, opacity: parseFloat(e.target.value) })}
-                            className="w-full"
-                          />
+                          <button
+                            type="button"
+                            onClick={addOverlayItem}
+                            disabled={overlayConfig.overlays.length >= MAX_OVERLAYS}
+                            className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 disabled:text-slate-400 disabled:cursor-not-allowed"
+                          >
+                            <Plus className="w-4 h-4" />
+                            Add Overlay
+                          </button>
                         </div>
 
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">
-                            Size ({(overlayConfig.scale * 100).toFixed(0)}%)
-                          </label>
-                          <input
-                            type="range"
-                            min="0.05"
-                            max="1.0"
-                            step="0.05"
-                            value={overlayConfig.scale}
-                            onChange={(e) => setOverlayConfig({ ...overlayConfig, scale: parseFloat(e.target.value) })}
-                            className="w-full"
-                          />
-                        </div>
+                        {overlayConfig.overlays.length === 0 && (
+                          <div className="text-center py-6 bg-white rounded-lg border-2 border-dashed border-slate-300">
+                            <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                            <p className="text-sm text-slate-600">No overlays configured</p>
+                            <button
+                              type="button"
+                              onClick={addOverlayItem}
+                              className="mt-2 text-sm text-blue-600 hover:text-blue-700"
+                            >
+                              Add your first overlay
+                            </button>
+                          </div>
+                        )}
+
+                        {overlayConfig.overlays.map((overlay, index) => (
+                          <div key={overlay.id} className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                            {/* Overlay Header */}
+                            <div
+                              className="flex items-center justify-between p-3 bg-slate-50 cursor-pointer"
+                              onClick={() => toggleOverlayExpanded(overlay.id)}
+                            >
+                              <div className="flex items-center gap-3">
+                                <span className="text-xs font-bold text-slate-500">#{index + 1}</span>
+                                <input
+                                  type="text"
+                                  value={overlay.name}
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    updateOverlayItem(overlay.id, { name: e.target.value });
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  placeholder="Overlay name..."
+                                  className="text-sm font-medium text-slate-900 bg-transparent border-none focus:ring-0 p-0"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeOverlayItem(overlay.id);
+                                  }}
+                                  className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                                {expandedOverlays.has(overlay.id) ? (
+                                  <ChevronUp className="w-4 h-4 text-slate-500" />
+                                ) : (
+                                  <ChevronDown className="w-4 h-4 text-slate-500" />
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Overlay Details */}
+                            {expandedOverlays.has(overlay.id) && (
+                              <div className="p-4 space-y-4">
+                                {/* Orientation Tabs */}
+                                <div className="flex gap-2 border-b border-slate-200">
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveTab(overlay.id, 'portrait')}
+                                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                      getActiveTab(overlay.id) === 'portrait'
+                                        ? 'border-blue-500 text-blue-600'
+                                        : 'border-transparent text-slate-500 hover:text-slate-700'
+                                    }`}
+                                  >
+                                    Portrait
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveTab(overlay.id, 'landscape')}
+                                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                      getActiveTab(overlay.id) === 'landscape'
+                                        ? 'border-blue-500 text-blue-600'
+                                        : 'border-transparent text-slate-500 hover:text-slate-700'
+                                    }`}
+                                  >
+                                    Landscape
+                                  </button>
+                                  {getActiveTab(overlay.id) === 'portrait' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => copySettingsToLandscape(overlay.id)}
+                                      className="ml-auto flex items-center gap-1 px-3 py-1 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded"
+                                    >
+                                      <Copy className="w-3 h-3" />
+                                      Copy to Landscape
+                                    </button>
+                                  )}
+                                </div>
+
+                                {/* Tab Content */}
+                                {(['portrait', 'landscape'] as const).map((orientation) => {
+                                  if (getActiveTab(overlay.id) !== orientation) return null;
+                                  const settings = overlay[orientation];
+                                  const imageUrl = orientation === 'portrait' ? overlay.portraitUrl : overlay.landscapeUrl;
+                                  const preview = overlayPreviews.get(overlay.id)?.[orientation];
+
+                                  return (
+                                    <div key={orientation} className="space-y-4">
+                                      {/* Enabled Toggle */}
+                                      <div className="flex items-center">
+                                        <input
+                                          type="checkbox"
+                                          id={`overlay-${overlay.id}-${orientation}-enabled`}
+                                          checked={settings.enabled}
+                                          onChange={(e) => updateOrientationSettings(overlay.id, orientation, { enabled: e.target.checked })}
+                                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                        />
+                                        <label htmlFor={`overlay-${overlay.id}-${orientation}-enabled`} className="ml-2 text-sm text-slate-700">
+                                          Enable for {orientation} photos
+                                        </label>
+                                      </div>
+
+                                      {settings.enabled && (
+                                        <>
+                                          {/* Image Upload */}
+                                          <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-2">
+                                              Overlay Image
+                                            </label>
+                                            <input
+                                              type="file"
+                                              accept="image/*"
+                                              onChange={(e) => handleOverlayFileChange(overlay.id, orientation, e)}
+                                              className="w-full text-sm text-slate-500
+                                                file:mr-4 file:py-2 file:px-4
+                                                file:rounded-lg file:border-0
+                                                file:text-sm file:font-semibold
+                                                file:bg-blue-50 file:text-blue-700
+                                                hover:file:bg-blue-100
+                                                cursor-pointer"
+                                            />
+
+                                            {/* Preview */}
+                                            {(preview || imageUrl) && (
+                                              <div className="mt-3">
+                                                <p className="text-xs font-medium text-slate-700 mb-1">
+                                                  {preview ? 'New Image:' : 'Current Image:'}
+                                                </p>
+                                                <div className="relative w-24 h-24 bg-white border-2 border-slate-200 rounded-lg overflow-hidden">
+                                                  <img
+                                                    src={preview || imageUrl}
+                                                    alt="Overlay preview"
+                                                    className="w-full h-full object-contain"
+                                                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                                  />
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Position */}
+                                          <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                                              Position
+                                            </label>
+                                            <select
+                                              value={settings.position}
+                                              onChange={(e) => updateOrientationSettings(overlay.id, orientation, { position: e.target.value as OverlayPosition })}
+                                              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
+                                            >
+                                              <option value="bottom-right">Bottom Right</option>
+                                              <option value="bottom-left">Bottom Left</option>
+                                              <option value="top-right">Top Right</option>
+                                              <option value="top-left">Top Left</option>
+                                              <option value="center">Center</option>
+                                            </select>
+                                          </div>
+
+                                          {/* Opacity & Scale */}
+                                          <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                              <label className="block text-sm font-medium text-slate-700 mb-1">
+                                                Opacity ({(settings.opacity * 100).toFixed(0)}%)
+                                              </label>
+                                              <input
+                                                type="range"
+                                                min="0"
+                                                max="1"
+                                                step="0.1"
+                                                value={settings.opacity}
+                                                onChange={(e) => updateOrientationSettings(overlay.id, orientation, { opacity: parseFloat(e.target.value) })}
+                                                className="w-full"
+                                              />
+                                            </div>
+
+                                            <div>
+                                              <label className="block text-sm font-medium text-slate-700 mb-1">
+                                                Size ({(settings.scale * 100).toFixed(0)}%)
+                                              </label>
+                                              <input
+                                                type="range"
+                                                min="0.05"
+                                                max="1.0"
+                                                step="0.05"
+                                                value={settings.scale}
+                                                onChange={(e) => updateOrientationSettings(overlay.id, orientation, { scale: parseFloat(e.target.value) })}
+                                                className="w-full"
+                                              />
+                                            </div>
+                                          </div>
+                                        </>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        ))}
                       </div>
+
+                      {uploadingOverlay && (
+                        <div className="text-center py-2 text-sm text-blue-600">
+                          Uploading overlay images...
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1022,104 +1337,263 @@ export default function Admin() {
 
                   {overlayConfig.enabled && (
                     <div className="ml-6 space-y-4 bg-slate-50 p-4 rounded-lg">
-                      {/* Current Overlay */}
-                      {overlayConfig.url && !overlayFile && (
-                        <div className="mb-4">
-                          <p className="text-xs font-medium text-slate-700 mb-2">Current Overlay:</p>
-                          <div className="relative w-32 h-32 bg-white border-2 border-slate-200 rounded-lg overflow-hidden">
-                            <img 
-                              src={overlayConfig.url} 
-                              alt="Current overlay" 
-                              className="w-full h-full object-contain"
-                              onError={(e) => { e.currentTarget.style.display = 'none'; }}
-                            />
-                          </div>
-                        </div>
-                      )}
-
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">
-                          {overlayFile ? 'Replace' : 'Change'} Overlay Image
-                        </label>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={handleOverlayFileChange}
-                          className="w-full text-sm text-slate-500
-                            file:mr-4 file:py-2 file:px-4
-                            file:rounded-lg file:border-0
-                            file:text-sm file:font-semibold
-                            file:bg-amber-50 file:text-amber-700
-                            hover:file:bg-amber-100
-                            cursor-pointer"
-                        />
-                        <p className="text-xs text-slate-500 mt-1">
-                          {uploadingOverlay ? 'Uploading...' : 'Upload a new image to replace the current overlay'}
-                        </p>
-                        
-                        {/* New Preview */}
-                        {overlayPreview && (
-                          <div className="mt-3">
-                            <p className="text-xs font-medium text-slate-700 mb-1">New Preview:</p>
-                            <div className="relative w-32 h-32 bg-white border-2 border-amber-200 rounded-lg overflow-hidden">
-                              <img 
-                                src={overlayPreview} 
-                                alt="New overlay preview" 
-                                className="w-full h-full object-contain"
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
+                      {/* Mode Selector */}
                       <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">
-                          Position
+                          Selection Mode
                         </label>
                         <select
-                          value={overlayConfig.position}
-                          onChange={(e) => setOverlayConfig({ ...overlayConfig, position: e.target.value as OverlayConfig['position'] })}
+                          value={overlayConfig.mode}
+                          onChange={(e) => setOverlayConfig({ ...overlayConfig, mode: e.target.value as OverlayMode })}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none"
                         >
-                          <option value="bottom-right">Bottom Right</option>
-                          <option value="bottom-left">Bottom Left</option>
-                          <option value="top-right">Top Right</option>
-                          <option value="top-left">Top Left</option>
-                          <option value="center">Center</option>
+                          <option value="random">Random - Auto-select one overlay</option>
+                          <option value="user_choice">User Choice - Let user pick from carousel</option>
                         </select>
+                        <p className="text-xs text-slate-500 mt-1">
+                          {overlayConfig.mode === 'random'
+                            ? 'System randomly picks one overlay for each photo'
+                            : 'Users see a carousel and choose their preferred overlay'}
+                        </p>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">
-                            Opacity ({(overlayConfig.opacity * 100).toFixed(0)}%)
+                      {/* Overlay List */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-sm font-medium text-slate-700">
+                            Overlays ({overlayConfig.overlays.length}/{MAX_OVERLAYS})
                           </label>
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.1"
-                            value={overlayConfig.opacity}
-                            onChange={(e) => setOverlayConfig({ ...overlayConfig, opacity: parseFloat(e.target.value) })}
-                            className="w-full"
-                          />
+                          <button
+                            type="button"
+                            onClick={addOverlayItem}
+                            disabled={overlayConfig.overlays.length >= MAX_OVERLAYS}
+                            className="flex items-center gap-1 text-sm text-amber-600 hover:text-amber-700 disabled:text-slate-400 disabled:cursor-not-allowed"
+                          >
+                            <Plus className="w-4 h-4" />
+                            Add Overlay
+                          </button>
                         </div>
 
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">
-                            Size ({(overlayConfig.scale * 100).toFixed(0)}%)
-                          </label>
-                          <input
-                            type="range"
-                            min="0.05"
-                            max="1.0"
-                            step="0.05"
-                            value={overlayConfig.scale}
-                            onChange={(e) => setOverlayConfig({ ...overlayConfig, scale: parseFloat(e.target.value) })}
-                            className="w-full"
-                          />
-                        </div>
+                        {overlayConfig.overlays.length === 0 && (
+                          <div className="text-center py-6 bg-white rounded-lg border-2 border-dashed border-slate-300">
+                            <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                            <p className="text-sm text-slate-600">No overlays configured</p>
+                            <button
+                              type="button"
+                              onClick={addOverlayItem}
+                              className="mt-2 text-sm text-amber-600 hover:text-amber-700"
+                            >
+                              Add your first overlay
+                            </button>
+                          </div>
+                        )}
+
+                        {overlayConfig.overlays.map((overlay, index) => (
+                          <div key={overlay.id} className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                            {/* Overlay Header */}
+                            <div
+                              className="flex items-center justify-between p-3 bg-slate-50 cursor-pointer"
+                              onClick={() => toggleOverlayExpanded(overlay.id)}
+                            >
+                              <div className="flex items-center gap-3">
+                                <span className="text-xs font-bold text-slate-500">#{index + 1}</span>
+                                <input
+                                  type="text"
+                                  value={overlay.name}
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    updateOverlayItem(overlay.id, { name: e.target.value });
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  placeholder="Overlay name..."
+                                  className="text-sm font-medium text-slate-900 bg-transparent border-none focus:ring-0 p-0"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeOverlayItem(overlay.id);
+                                  }}
+                                  className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                                {expandedOverlays.has(overlay.id) ? (
+                                  <ChevronUp className="w-4 h-4 text-slate-500" />
+                                ) : (
+                                  <ChevronDown className="w-4 h-4 text-slate-500" />
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Overlay Details */}
+                            {expandedOverlays.has(overlay.id) && (
+                              <div className="p-4 space-y-4">
+                                {/* Orientation Tabs */}
+                                <div className="flex gap-2 border-b border-slate-200">
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveTab(overlay.id, 'portrait')}
+                                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                      getActiveTab(overlay.id) === 'portrait'
+                                        ? 'border-amber-500 text-amber-600'
+                                        : 'border-transparent text-slate-500 hover:text-slate-700'
+                                    }`}
+                                  >
+                                    Portrait
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveTab(overlay.id, 'landscape')}
+                                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                      getActiveTab(overlay.id) === 'landscape'
+                                        ? 'border-amber-500 text-amber-600'
+                                        : 'border-transparent text-slate-500 hover:text-slate-700'
+                                    }`}
+                                  >
+                                    Landscape
+                                  </button>
+                                  {getActiveTab(overlay.id) === 'portrait' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => copySettingsToLandscape(overlay.id)}
+                                      className="ml-auto flex items-center gap-1 px-3 py-1 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded"
+                                    >
+                                      <Copy className="w-3 h-3" />
+                                      Copy to Landscape
+                                    </button>
+                                  )}
+                                </div>
+
+                                {/* Tab Content */}
+                                {(['portrait', 'landscape'] as const).map((orientation) => {
+                                  if (getActiveTab(overlay.id) !== orientation) return null;
+                                  const settings = overlay[orientation];
+                                  const imageUrl = orientation === 'portrait' ? overlay.portraitUrl : overlay.landscapeUrl;
+                                  const preview = overlayPreviews.get(overlay.id)?.[orientation];
+
+                                  return (
+                                    <div key={orientation} className="space-y-4">
+                                      {/* Enabled Toggle */}
+                                      <div className="flex items-center">
+                                        <input
+                                          type="checkbox"
+                                          id={`edit-overlay-${overlay.id}-${orientation}-enabled`}
+                                          checked={settings.enabled}
+                                          onChange={(e) => updateOrientationSettings(overlay.id, orientation, { enabled: e.target.checked })}
+                                          className="h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                                        />
+                                        <label htmlFor={`edit-overlay-${overlay.id}-${orientation}-enabled`} className="ml-2 text-sm text-slate-700">
+                                          Enable for {orientation} photos
+                                        </label>
+                                      </div>
+
+                                      {settings.enabled && (
+                                        <>
+                                          {/* Image Upload */}
+                                          <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-2">
+                                              Overlay Image
+                                            </label>
+                                            <input
+                                              type="file"
+                                              accept="image/*"
+                                              onChange={(e) => handleOverlayFileChange(overlay.id, orientation, e)}
+                                              className="w-full text-sm text-slate-500
+                                                file:mr-4 file:py-2 file:px-4
+                                                file:rounded-lg file:border-0
+                                                file:text-sm file:font-semibold
+                                                file:bg-amber-50 file:text-amber-700
+                                                hover:file:bg-amber-100
+                                                cursor-pointer"
+                                            />
+
+                                            {/* Preview */}
+                                            {(preview || imageUrl) && (
+                                              <div className="mt-3">
+                                                <p className="text-xs font-medium text-slate-700 mb-1">
+                                                  {preview ? 'New Image:' : 'Current Image:'}
+                                                </p>
+                                                <div className="relative w-24 h-24 bg-white border-2 border-slate-200 rounded-lg overflow-hidden">
+                                                  <img
+                                                    src={preview || imageUrl}
+                                                    alt="Overlay preview"
+                                                    className="w-full h-full object-contain"
+                                                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                                  />
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Position */}
+                                          <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                                              Position
+                                            </label>
+                                            <select
+                                              value={settings.position}
+                                              onChange={(e) => updateOrientationSettings(overlay.id, orientation, { position: e.target.value as OverlayPosition })}
+                                              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none text-sm"
+                                            >
+                                              <option value="bottom-right">Bottom Right</option>
+                                              <option value="bottom-left">Bottom Left</option>
+                                              <option value="top-right">Top Right</option>
+                                              <option value="top-left">Top Left</option>
+                                              <option value="center">Center</option>
+                                            </select>
+                                          </div>
+
+                                          {/* Opacity & Scale */}
+                                          <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                              <label className="block text-sm font-medium text-slate-700 mb-1">
+                                                Opacity ({(settings.opacity * 100).toFixed(0)}%)
+                                              </label>
+                                              <input
+                                                type="range"
+                                                min="0"
+                                                max="1"
+                                                step="0.1"
+                                                value={settings.opacity}
+                                                onChange={(e) => updateOrientationSettings(overlay.id, orientation, { opacity: parseFloat(e.target.value) })}
+                                                className="w-full"
+                                              />
+                                            </div>
+
+                                            <div>
+                                              <label className="block text-sm font-medium text-slate-700 mb-1">
+                                                Size ({(settings.scale * 100).toFixed(0)}%)
+                                              </label>
+                                              <input
+                                                type="range"
+                                                min="0.05"
+                                                max="1.0"
+                                                step="0.05"
+                                                value={settings.scale}
+                                                onChange={(e) => updateOrientationSettings(overlay.id, orientation, { scale: parseFloat(e.target.value) })}
+                                                className="w-full"
+                                              />
+                                            </div>
+                                          </div>
+                                        </>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        ))}
                       </div>
+
+                      {uploadingOverlay && (
+                        <div className="text-center py-2 text-sm text-amber-600">
+                          Uploading overlay images...
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1127,7 +1601,7 @@ export default function Admin() {
                 {/* Success Screen Configuration */}
                 <div className="border-t border-slate-200 pt-4 mt-4">
                   <h4 className="text-sm font-semibold text-slate-900 mb-4">Success Screen Options</h4>
-                  
+
                   <div className="space-y-4">
                     <div className="flex items-center">
                       <input
