@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Camera, CheckCircle, XCircle, RotateCcw, Upload, AlertCircle, Image, Video, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Camera, CheckCircle, XCircle, RotateCcw, Upload, AlertCircle, Image, Video, X, ChevronLeft, ChevronRight, Clock, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { compressImage } from '../utils/imageCompression';
 import { supabase } from '../lib/supabase';
 import { applyOverlay } from '../utils/imageOverlay';
@@ -10,6 +10,13 @@ import {
   isLegacyOverlayConfig,
   migrateLegacyConfig,
 } from '../types/overlay';
+import {
+  UploadHistoryItem,
+  saveToHistory,
+  getHistoryByToken,
+  deleteFromHistory,
+  formatTimestamp,
+} from '../utils/uploadHistory';
 
 interface SuccessConfig {
   show_photo: boolean;
@@ -45,6 +52,11 @@ export default function CapturePhoto() {
   const [availableOverlays, setAvailableOverlays] = useState<OverlayItem[]>([]);
   const [imageOrientation, setImageOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const carouselRef = useRef<HTMLDivElement>(null);
+
+  // Upload history state
+  const [uploadHistory, setUploadHistory] = useState<UploadHistoryItem[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [expandedHistoryImage, setExpandedHistoryImage] = useState<UploadHistoryItem | null>(null);
 
   const token = searchParams.get('t');
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -96,6 +108,43 @@ export default function CapturePhoto() {
     const isMobile = /iphone|ipad|ipod|android|webos|blackberry|windows phone/i.test(userAgent);
     setIsDesktop(!isMobile);
   }, []);
+
+  // Load upload history for this token
+  useEffect(() => {
+    if (!token) return;
+
+    const loadHistory = async () => {
+      try {
+        const history = await getHistoryByToken(token);
+        setUploadHistory(history);
+      } catch (err) {
+        console.error('Failed to load upload history:', err);
+      }
+    };
+
+    loadHistory();
+  }, [token]);
+
+  // Reload history after successful upload
+  const reloadHistory = useCallback(async () => {
+    if (!token) return;
+    try {
+      const history = await getHistoryByToken(token);
+      setUploadHistory(history);
+    } catch (err) {
+      console.error('Failed to reload history:', err);
+    }
+  }, [token]);
+
+  // Delete history item
+  const handleDeleteHistoryItem = useCallback(async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await deleteFromHistory(id);
+    setUploadHistory(prev => prev.filter(item => item.id !== id));
+    if (expandedHistoryImage?.id === id) {
+      setExpandedHistoryImage(null);
+    }
+  }, [expandedHistoryImage]);
 
   // Cleanup webcam on unmount
   useEffect(() => {
@@ -518,6 +567,18 @@ export default function CapturePhoto() {
 
       console.log('[Upload] Upload recorded successfully!');
 
+      // Save to local history
+      try {
+        const overlayName = hasOverlay && selectedOverlayIndex !== null
+          ? availableOverlays[selectedOverlayIndex]?.name
+          : undefined;
+        await saveToHistory(manipulatedDataUrl, token, overlayName);
+        await reloadHistory();
+      } catch (historyErr) {
+        console.warn('[Upload] Failed to save to history:', historyErr);
+        // Don't fail the upload for history errors
+      }
+
       setSuccess(true);
 
       // Handle redirect if enabled
@@ -733,6 +794,103 @@ export default function CapturePhoto() {
                   <p className="text-red-800 text-sm">{error}</p>
                 </div>
               )}
+
+              {/* Upload History Section */}
+              {uploadHistory.length > 0 && (
+                <div className="border-t border-slate-200 pt-4 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => setShowHistory(!showHistory)}
+                    className="flex items-center justify-between w-full text-left"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-5 h-5 text-slate-500" />
+                      <span className="text-sm font-medium text-slate-700">
+                        Recent Uploads ({uploadHistory.length})
+                      </span>
+                    </div>
+                    {showHistory ? (
+                      <ChevronUp className="w-5 h-5 text-slate-400" />
+                    ) : (
+                      <ChevronDown className="w-5 h-5 text-slate-400" />
+                    )}
+                  </button>
+
+                  {showHistory && (
+                    <div className="mt-3 grid grid-cols-4 gap-2">
+                      {uploadHistory.map((item) => (
+                        <div
+                          key={item.id}
+                          onClick={() => setExpandedHistoryImage(item)}
+                          className="relative aspect-square rounded-lg overflow-hidden bg-slate-100 cursor-pointer group"
+                        >
+                          <img
+                            src={item.thumbnailData}
+                            alt={`Upload from ${formatTimestamp(item.timestamp)}`}
+                            className="w-full h-full object-cover group-hover:opacity-80 transition-opacity"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <button
+                            onClick={(e) => handleDeleteHistoryItem(item.id, e)}
+                            className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Trash2 className="w-3 h-3 text-white" />
+                          </button>
+                          <span className="absolute bottom-1 left-1 text-[10px] text-white font-medium opacity-0 group-hover:opacity-100 transition-opacity">
+                            {formatTimestamp(item.timestamp)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Expanded History Image Modal */}
+          {expandedHistoryImage && (
+            <div
+              className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
+              onClick={() => setExpandedHistoryImage(null)}
+            >
+              <div className="relative max-w-2xl w-full bg-white rounded-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                <button
+                  onClick={() => setExpandedHistoryImage(null)}
+                  className="absolute top-2 right-2 p-2 bg-black/50 rounded-full text-white hover:bg-black/70 transition-colors z-10"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+                <img
+                  src={expandedHistoryImage.imageData}
+                  alt="Full size"
+                  className="w-full h-auto max-h-[70vh] object-contain"
+                />
+                <div className="p-4 bg-white border-t">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-slate-600">
+                        {formatTimestamp(expandedHistoryImage.timestamp)}
+                      </p>
+                      {expandedHistoryImage.overlayName && (
+                        <p className="text-xs text-slate-500">
+                          Overlay: {expandedHistoryImage.overlayName}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        handleDeleteHistoryItem(expandedHistoryImage.id, e);
+                        setExpandedHistoryImage(null);
+                      }}
+                      className="flex items-center gap-1 text-red-600 hover:text-red-700 text-sm"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
