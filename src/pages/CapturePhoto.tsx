@@ -507,15 +507,30 @@ export default function CapturePhoto() {
                 id="gallery-input"
               />
 
-              <div className={`grid gap-4 ${isDesktop ? 'grid-cols-3' : 'grid-cols-2'}`}>
-                <button
-                  type="button"
-                  onClick={openCamera}
-                  className="flex flex-col items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-6 px-4 rounded-xl transition-colors"
-                >
-                  <Camera className="w-8 h-8" />
-                  <span className="text-sm">Take Photo</span>
-                </button>
+              <div className="grid gap-4 grid-cols-2">
+                {/* Take Photo - mobile only */}
+                {!isDesktop && (
+                  <button
+                    type="button"
+                    onClick={openCamera}
+                    className="flex flex-col items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-6 px-4 rounded-xl transition-colors"
+                  >
+                    <Camera className="w-8 h-8" />
+                    <span className="text-sm">Take Photo</span>
+                  </button>
+                )}
+
+                {/* Webcam - desktop only */}
+                {isDesktop && (
+                  <button
+                    type="button"
+                    onClick={startWebcam}
+                    className="flex flex-col items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-6 px-4 rounded-xl transition-colors"
+                  >
+                    <Video className="w-8 h-8" />
+                    <span className="text-sm">Webcam</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -525,17 +540,6 @@ export default function CapturePhoto() {
                   <Image className="w-8 h-8" />
                   <span className="text-sm">Gallery</span>
                 </button>
-
-                {isDesktop && (
-                  <button
-                    type="button"
-                    onClick={startWebcam}
-                    className="flex flex-col items-center justify-center gap-3 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-6 px-4 rounded-xl transition-colors"
-                  >
-                    <Video className="w-8 h-8" />
-                    <span className="text-sm">Webcam</span>
-                  </button>
-                )}
               </div>
 
               {error && (
