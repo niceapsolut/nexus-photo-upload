@@ -106,6 +106,60 @@ export default function CapturePhoto() {
     };
   }, [webcamStream]);
 
+  // Detect image orientation from data URL - must be defined before processImageForOverlay
+  const detectOrientation = useCallback((dataUrl: string): Promise<'portrait' | 'landscape'> => {
+    return new Promise((resolve) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const orientation = img.height > img.width ? 'portrait' : 'landscape';
+        resolve(orientation);
+      };
+      img.onerror = () => resolve('portrait'); // Default to portrait on error
+      img.src = dataUrl;
+    });
+  }, []);
+
+  // Filter overlays based on orientation and enabled status - must be defined before processImageForOverlay
+  const getAvailableOverlays = useCallback((config: OverlayConfig, orientation: 'portrait' | 'landscape'): OverlayItem[] => {
+    return config.overlays.filter(overlay => {
+      const settings = overlay[orientation];
+      const imageUrl = orientation === 'portrait' ? overlay.portraitUrl : overlay.landscapeUrl;
+      return settings.enabled && imageUrl;
+    });
+  }, []);
+
+  // Process image capture - detect orientation and show carousel if needed
+  // Must be defined before captureFromWebcam which uses it
+  const processImageForOverlay = useCallback(async (dataUrl: string, config: OverlayConfig | null) => {
+    if (!config?.enabled || config.overlays.length === 0) {
+      // No overlay config - proceed directly
+      return;
+    }
+
+    // Detect orientation
+    const orientation = await detectOrientation(dataUrl);
+    setImageOrientation(orientation);
+
+    // Get available overlays for this orientation
+    const available = getAvailableOverlays(config, orientation);
+    setAvailableOverlays(available);
+
+    if (available.length === 0) {
+      // No overlays available for this orientation
+      return;
+    }
+
+    if (config.mode === 'random') {
+      // Random mode - auto-select one overlay
+      const randomIndex = Math.floor(Math.random() * available.length);
+      setSelectedOverlayIndex(randomIndex);
+    } else {
+      // User choice mode - show carousel
+      setShowOverlayCarousel(true);
+      setSelectedOverlayIndex(0); // Default to first overlay
+    }
+  }, [detectOrientation, getAvailableOverlays]);
+
   const startWebcam = useCallback(async () => {
     try {
       setError(null);
@@ -210,28 +264,6 @@ export default function CapturePhoto() {
     if (galleryInputRef.current) galleryInputRef.current.value = '';
   };
 
-  // Detect image orientation from data URL
-  const detectOrientation = useCallback((dataUrl: string): Promise<'portrait' | 'landscape'> => {
-    return new Promise((resolve) => {
-      const img = new window.Image();
-      img.onload = () => {
-        const orientation = img.height > img.width ? 'portrait' : 'landscape';
-        resolve(orientation);
-      };
-      img.onerror = () => resolve('portrait'); // Default to portrait on error
-      img.src = dataUrl;
-    });
-  }, []);
-
-  // Filter overlays based on orientation and enabled status
-  const getAvailableOverlays = useCallback((config: OverlayConfig, orientation: 'portrait' | 'landscape'): OverlayItem[] => {
-    return config.overlays.filter(overlay => {
-      const settings = overlay[orientation];
-      const imageUrl = orientation === 'portrait' ? overlay.portraitUrl : overlay.landscapeUrl;
-      return settings.enabled && imageUrl;
-    });
-  }, []);
-
   // Handle overlay selection and proceed to upload
   const handleOverlaySelected = useCallback((index: number | null) => {
     setSelectedOverlayIndex(index);
@@ -268,37 +300,6 @@ export default function CapturePhoto() {
       }
     }
   }, [selectedOverlayIndex, showOverlayCarousel]);
-
-  // Process image capture - detect orientation and show carousel if needed
-  const processImageForOverlay = useCallback(async (dataUrl: string, config: OverlayConfig | null) => {
-    if (!config?.enabled || config.overlays.length === 0) {
-      // No overlay config - proceed directly
-      return;
-    }
-
-    // Detect orientation
-    const orientation = await detectOrientation(dataUrl);
-    setImageOrientation(orientation);
-
-    // Get available overlays for this orientation
-    const available = getAvailableOverlays(config, orientation);
-    setAvailableOverlays(available);
-
-    if (available.length === 0) {
-      // No overlays available for this orientation
-      return;
-    }
-
-    if (config.mode === 'random') {
-      // Random mode - auto-select one overlay
-      const randomIndex = Math.floor(Math.random() * available.length);
-      setSelectedOverlayIndex(randomIndex);
-    } else {
-      // User choice mode - show carousel
-      setShowOverlayCarousel(true);
-      setSelectedOverlayIndex(0); // Default to first overlay
-    }
-  }, [detectOrientation, getAvailableOverlays]);
 
   const handleUpload = async () => {
     if (!capturedImage || !token) return;
