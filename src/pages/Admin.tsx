@@ -537,6 +537,45 @@ export default function Admin() {
     }
   };
 
+  const cloneToken = async (token: UploadToken) => {
+    const newName = prompt(`Enter name for cloned link:`, `${token.name} (Copy)`);
+    if (!newName) return;
+
+    try {
+      // Calculate new expiration (same duration from now if original had expiration)
+      let expiresAt = null;
+      if (token.expires_at) {
+        const originalExpiry = new Date(token.expires_at);
+        const originalCreated = new Date(token.created_at);
+        const durationMs = originalExpiry.getTime() - originalCreated.getTime();
+        const newExpiry = new Date(Date.now() + durationMs);
+        expiresAt = newExpiry.toISOString();
+      }
+
+      const { error } = await supabase
+        .from('upload_tokens')
+        .insert({
+          name: newName,
+          folder_id: token.folder_id,
+          max_uploads: token.max_uploads,
+          expires_at: expiresAt,
+          created_by: user?.id,
+          overlay_config: token.overlay_config,
+          success_config: token.success_config,
+          is_active: true,
+          upload_count: 0,
+        });
+
+      if (error) throw error;
+
+      loadTokens();
+      alert(`Link "${newName}" created successfully!`);
+    } catch (err) {
+      console.error('Error cloning token:', err);
+      alert('Failed to clone link. Please try again.');
+    }
+  };
+
   const getUploadUrl = (tokenId: string) => {
     return `${window.location.origin}/capture?t=${tokenId}`;
   };
@@ -1809,6 +1848,13 @@ export default function Admin() {
                       title="Edit link"
                     >
                       <Edit className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => cloneToken(token)}
+                      className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-colors"
+                      title="Clone link"
+                    >
+                      <Copy className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => deleteToken(token.id, token.name)}
