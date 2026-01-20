@@ -3,6 +3,19 @@
 export type OverlayPosition = 'center' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 export type OverlayMode = 'random' | 'user_choice';
 
+// Safe UUID generation with fallback for older browsers
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return generateUUID();
+  }
+  // Fallback for older browsers
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 /**
  * Settings for a specific orientation (portrait or landscape)
  */
@@ -69,7 +82,7 @@ export function migrateLegacyConfig(legacy: LegacyOverlayConfig): OverlayConfig 
     enabled: legacy.enabled,
     mode: 'random',
     overlays: [{
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       name: 'Default Overlay',
       portraitUrl: legacy.url,
       landscapeUrl: legacy.url,
@@ -107,7 +120,7 @@ export function getDefaultOrientationSettings(): OrientationSettings {
  */
 export function createEmptyOverlayItem(): OverlayItem {
   return {
-    id: crypto.randomUUID(),
+    id: generateUUID(),
     name: '',
     portraitUrl: '',
     landscapeUrl: '',
