@@ -57,6 +57,7 @@ export default function Admin() {
   const qrRef = useRef<HTMLDivElement>(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [invitePassword, setInvitePassword] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteMessage, setInviteMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [formData, setFormData] = useState({
@@ -442,29 +443,29 @@ export default function Admin() {
     setInviteMessage(null);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-admin`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token}`,
-        },
-        body: JSON.stringify({ email: inviteEmail }),
+      const { data, error } = await supabase.auth.signUp({
+        email: inviteEmail,
+        password: invitePassword,
       });
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to send invite');
+      if (error) {
+        throw error;
       }
 
-      setInviteMessage({ type: 'success', text: `Invitation sent to ${inviteEmail}` });
+      if (!data.user) {
+        throw new Error('Failed to create user');
+      }
+
+      setInviteMessage({
+        type: 'success',
+        text: `Admin account created for ${inviteEmail}. Share the password with them to login.`
+      });
       setInviteEmail('');
+      setInvitePassword('');
     } catch (err) {
       setInviteMessage({
         type: 'error',
-        text: err instanceof Error ? err.message : 'Failed to send invite'
+        text: err instanceof Error ? err.message : 'Failed to create admin'
       });
     } finally {
       setInviteLoading(false);
@@ -1331,12 +1332,13 @@ export default function Admin() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setShowInviteModal(false)}>
           <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-bold text-slate-900">Invite Admin</h3>
+              <h3 className="text-xl font-bold text-slate-900">Create Admin Account</h3>
               <button
                 onClick={() => {
                   setShowInviteModal(false);
                   setInviteMessage(null);
                   setInviteEmail('');
+                  setInvitePassword('');
                 }}
                 className="text-slate-400 hover:text-slate-600 transition-colors"
               >
@@ -1360,6 +1362,22 @@ export default function Admin() {
                 />
               </div>
 
+              <div>
+                <label htmlFor="invite-password" className="block text-sm font-medium text-slate-700 mb-1">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  id="invite-password"
+                  value={invitePassword}
+                  onChange={(e) => setInvitePassword(e.target.value)}
+                  required
+                  minLength={6}
+                  placeholder="Minimum 6 characters"
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+                />
+              </div>
+
               {inviteMessage && (
                 <div className={`p-3 rounded-lg ${inviteMessage.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
                   {inviteMessage.text}
@@ -1371,12 +1389,12 @@ export default function Admin() {
                 disabled={inviteLoading}
                 className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white font-semibold py-3 px-4 rounded-lg transition-colors"
               >
-                {inviteLoading ? 'Sending...' : 'Send Invitation'}
+                {inviteLoading ? 'Creating...' : 'Create Admin'}
               </button>
             </form>
 
             <p className="text-xs text-slate-500 mt-4 text-center">
-              The invited user will receive an email to set up their account.
+              Share the email and password with the new admin so they can sign in.
             </p>
           </div>
         </div>
