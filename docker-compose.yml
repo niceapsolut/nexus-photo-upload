@@ -1,0 +1,92 @@
+# This Docker Compose file is configured for deploying Supabase with Coolify.
+# It ensures that the Edge Functions from the 'supabase/functions' directory
+# are correctly mounted and made available to the Supabase Edge Runtime.
+
+version: '3.8'
+
+services:
+  db:
+    image: supabase/postgres:15.1.0.11
+    restart: always
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-postgres}
+    volumes:
+      - ./supabase/database:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong:
+    image: supabase/kong:2.8.1-alpine
+    restart: always
+    environment:
+      - KONG_DATABASE=off
+      - KONG_DECLARATIVE_CONFIG=/var/lib/kong/kong.yml
+      - KONG_DNS_ORDER=LAST,A,CNAME
+      - KONG_PLUGINS=request-transformer,cors,key-auth
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
+  edge-runtime:
+    image: supabase/edge-runtime:v1.36.2
+    restart: always
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+    volumes:
+      # This is the critical part: it maps your local functions
+      # directory into the container where the runtime expects them.
+      - ./supabase/functions:/home/deno/functions
+    depends_on:
+      - db
+
+# --- Other Supabase Services ---
+# These are included to ensure the full Supabase stack is represented.
+# Coolify will manage the environment variables for them based on what you set in the UI.
+
+  auth:
+    image: supabase/gotrue:v2.128.0
+    restart: always
+    environment:
+      - GOTRUE_SITE_URL=${SITE_URL}
+      - GOTRUE_JWT_SECRET=${JWT_SECRET}
+      - GOTRUE_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      - db
+
+  rest:
+    image: postgrest/postgrest:v11.2.2
+    restart: always
+    environment:
+      - PGRST_DB_URI=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - PGRST_DB_SCHEMA=public,storage
+      - PGRST_JWT_SECRET=${JWT_SECRET}
+    volumes:
+      - ./postgrest.conf:/etc/postgrest.conf
+    command: ["/usr/local/bin/postgrest", "/etc/postgrest.conf"]
+    depends_on:
+      - db
+
+  storage:
+    image: supabase/storage-api:v0.43.3
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - PGRST_URL=http://rest:3000
+      - FILE_SIZE_LIMIT=52428800
+      # S3 configuration must be provided as environment variables in Coolify
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+      - S3_ENDPOINT=${S3_ENDPOINT}
+      - S3_BUCKET=${S3_BUCKET}
+      - S3_REGION=${S3_REGION}
+    depends_on:
+      - db
+      - rest
