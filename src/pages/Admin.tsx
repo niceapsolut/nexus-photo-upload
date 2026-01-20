@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, QrCode, Upload, LogOut, Calendar, Hash, Trash2, X, Download, Edit, FolderOpen } from 'lucide-react';
+import { Plus, QrCode, Upload, LogOut, Calendar, Hash, Trash2, X, Download, Edit, FolderOpen, UserPlus } from 'lucide-react';
 import QRCodeSVG from 'react-qr-code';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -55,6 +55,10 @@ export default function Admin() {
   const [selectedQrUrl, setSelectedQrUrl] = useState('');
   const [selectedQrName, setSelectedQrName] = useState('');
   const qrRef = useRef<HTMLDivElement>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteMessage, setInviteMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     folder_id: '',
@@ -432,6 +436,41 @@ export default function Admin() {
     img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
   };
 
+  const inviteAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setInviteLoading(true);
+    setInviteMessage(null);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-admin`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({ email: inviteEmail }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to send invite');
+      }
+
+      setInviteMessage({ type: 'success', text: `Invitation sent to ${inviteEmail}` });
+      setInviteEmail('');
+    } catch (err) {
+      setInviteMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to send invite'
+      });
+    } finally {
+      setInviteLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white shadow-sm border-b border-slate-200">
@@ -456,6 +495,13 @@ export default function Admin() {
                 <Upload className="w-4 h-4" />
                 View Uploads
               </Link>
+              <button
+                onClick={() => setShowInviteModal(true)}
+                className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+              >
+                <UserPlus className="w-4 h-4" />
+                Invite Admin
+              </button>
               <button
                 onClick={handleSignOut}
                 className="flex items-center gap-2 text-slate-600 hover:text-slate-900 transition-colors"
@@ -1277,6 +1323,61 @@ export default function Admin() {
                 Copy Link
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showInviteModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setShowInviteModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-bold text-slate-900">Invite Admin</h3>
+              <button
+                onClick={() => {
+                  setShowInviteModal(false);
+                  setInviteMessage(null);
+                  setInviteEmail('');
+                }}
+                className="text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <form onSubmit={inviteAdmin} className="space-y-4">
+              <div>
+                <label htmlFor="invite-email" className="block text-sm font-medium text-slate-700 mb-1">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  id="invite-email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  required
+                  placeholder="admin@example.com"
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+                />
+              </div>
+
+              {inviteMessage && (
+                <div className={`p-3 rounded-lg ${inviteMessage.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+                  {inviteMessage.text}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={inviteLoading}
+                className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white font-semibold py-3 px-4 rounded-lg transition-colors"
+              >
+                {inviteLoading ? 'Sending...' : 'Send Invitation'}
+              </button>
+            </form>
+
+            <p className="text-xs text-slate-500 mt-4 text-center">
+              The invited user will receive an email to set up their account.
+            </p>
           </div>
         </div>
       )}

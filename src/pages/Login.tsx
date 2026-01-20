@@ -8,8 +8,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [isSignUp, setIsSignUp] = useState(false);
-  const { signIn, signUp } = useAuth();
+  const { signIn } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -18,14 +17,8 @@ export default function Login() {
     setLoading(true);
 
     try {
-      if (isSignUp) {
-        await signUp(email, password);
-        setError('Account created! Please check your email to verify your account, then sign in.');
-        setIsSignUp(false);
-      } else {
-        await signIn(email, password);
-        navigate('/admin');
-      }
+      await signIn(email, password);
+      navigate('/admin');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {
@@ -44,7 +37,7 @@ export default function Login() {
             Photo Upload Portal
           </h1>
           <p className="text-slate-600">
-            {isSignUp ? 'Create an account to get started' : 'Sign in to manage uploads'}
+            Sign in to manage uploads
           </p>
         </div>
 
@@ -92,21 +85,9 @@ export default function Login() {
             disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-semibold py-3 px-4 rounded-lg transition-colors"
           >
-            {loading ? 'Please wait...' : isSignUp ? 'Sign Up' : 'Sign In'}
+            {loading ? 'Please wait...' : 'Sign In'}
           </button>
         </form>
-
-        <div className="mt-6 text-center">
-          <button
-            onClick={() => {
-              setIsSignUp(!isSignUp);
-              setError(null);
-            }}
-            className="text-blue-600 hover:text-blue-700 text-sm font-medium"
-          >
-            {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
-          </button>
-        </div>
       </div>
     </div>
   );
