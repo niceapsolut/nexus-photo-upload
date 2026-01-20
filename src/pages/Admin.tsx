@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, QrCode, Upload, LogOut, Calendar, Hash, Trash2, X, Download, Edit, FolderOpen, UserPlus } from 'lucide-react';
+import { Plus, QrCode, Upload, LogOut, Calendar, Hash, Trash2, X, Download, Edit, FolderOpen, UserPlus, Users } from 'lucide-react';
 import QRCodeSVG from 'react-qr-code';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -43,6 +43,13 @@ interface Folder {
   color: string;
 }
 
+interface Admin {
+  id: string;
+  email: string;
+  created_at: string;
+  auth_user_id: string | null;
+}
+
 export default function Admin() {
   const { user, signOut } = useAuth();
   const [tokens, setTokens] = useState<UploadToken[]>([]);
@@ -60,6 +67,9 @@ export default function Admin() {
   const [invitePassword, setInvitePassword] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteMessage, setInviteMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showAdminsModal, setShowAdminsModal] = useState(false);
+  const [admins, setAdmins] = useState<Admin[]>([]);
+  const [adminsLoading, setAdminsLoading] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     folder_id: '',
@@ -437,6 +447,39 @@ export default function Admin() {
     img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
   };
 
+  const loadAdmins = async () => {
+    setAdminsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('admins')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setAdmins(data || []);
+    } catch (err) {
+      console.error('Error loading admins:', err);
+    } finally {
+      setAdminsLoading(false);
+    }
+  };
+
+  const deleteAdmin = async (adminId: string, email: string) => {
+    if (!confirm(`Remove ${email} from admins?`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('admins')
+        .delete()
+        .eq('id', adminId);
+
+      if (error) throw error;
+      loadAdmins();
+    } catch (err) {
+      console.error('Error deleting admin:', err);
+    }
+  };
+
   const inviteAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
     setInviteLoading(true);
@@ -456,12 +499,27 @@ export default function Admin() {
         throw new Error('Failed to create user');
       }
 
+      // Also save to admins table for listing
+      const { error: adminError } = await supabase
+        .from('admins')
+        .insert({
+          auth_user_id: data.user.id,
+          email: inviteEmail,
+          created_by: user?.id,
+        });
+
+      if (adminError) {
+        console.error('Error saving to admins table:', adminError);
+        // Don't throw - auth user was created successfully
+      }
+
       setInviteMessage({
         type: 'success',
         text: `Admin account created for ${inviteEmail}. Share the password with them to login.`
       });
       setInviteEmail('');
       setInvitePassword('');
+      loadAdmins();
     } catch (err) {
       setInviteMessage({
         type: 'error',
@@ -497,11 +555,21 @@ export default function Admin() {
                 View Uploads
               </Link>
               <button
+                onClick={() => {
+                  loadAdmins();
+                  setShowAdminsModal(true);
+                }}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+              >
+                <Users className="w-4 h-4" />
+                Admins
+              </button>
+              <button
                 onClick={() => setShowInviteModal(true)}
                 className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
               >
                 <UserPlus className="w-4 h-4" />
-                Invite Admin
+                Invite
               </button>
               <button
                 onClick={handleSignOut}
@@ -1396,6 +1464,73 @@ export default function Admin() {
             <p className="text-xs text-slate-500 mt-4 text-center">
               Share the email and password with the new admin so they can sign in.
             </p>
+          </div>
+        </div>
+      )}
+
+      {showAdminsModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setShowAdminsModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-8" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-bold text-slate-900">Admin Users</h3>
+              <button
+                onClick={() => setShowAdminsModal(false)}
+                className="text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            {adminsLoading ? (
+              <div className="text-center py-8">
+                <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                <p className="text-slate-600">Loading admins...</p>
+              </div>
+            ) : admins.length === 0 ? (
+              <div className="text-center py-8">
+                <Users className="w-12 h-12 text-slate-400 mx-auto mb-2" />
+                <p className="text-slate-600">No admins found</p>
+                <p className="text-sm text-slate-500 mt-1">Add the current user to the admins table</p>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-96 overflow-y-auto">
+                {admins.map((admin) => (
+                  <div
+                    key={admin.id}
+                    className="flex items-center justify-between bg-slate-50 rounded-lg p-4"
+                  >
+                    <div>
+                      <p className="font-medium text-slate-900">{admin.email}</p>
+                      <p className="text-xs text-slate-500">
+                        Added {new Date(admin.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    {admin.email !== user?.email && (
+                      <button
+                        onClick={() => deleteAdmin(admin.id, admin.email)}
+                        className="text-red-600 hover:text-red-700 p-2 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Remove admin"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-6 pt-4 border-t border-slate-200">
+              <button
+                onClick={() => {
+                  setShowAdminsModal(false);
+                  setShowInviteModal(true);
+                }}
+                className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors"
+              >
+                <UserPlus className="w-5 h-5" />
+                Invite New Admin
+              </button>
+            </div>
           </div>
         </div>
       )}
